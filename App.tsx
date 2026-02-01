@@ -5,6 +5,7 @@ import { generateLevelFromConfig, checkIsLocked, shuffleArray } from './utils/ga
 import { GAME_CONFIG, TRANSLATIONS, SLOT_BAR_WIDTH, GAME_CONFIGS, LANGUAGES } from './constants.tsx';
 import Tile from './components/Tile.tsx';
 import SlotBar from './components/SlotBar.tsx';
+import { adManager } from './utils/adManager.ts';
 
 const App: React.FC = () => {
   const [level, setLevel] = useState(1);
@@ -23,6 +24,8 @@ const App: React.FC = () => {
   const [isLevelLoading, setIsLevelLoading] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
   const [showLangModal, setShowLangModal] = useState(false);
+  const [isAdLoading, setIsAdLoading] = useState(false);
+  const [adError, setAdError] = useState<string | null>(null);
   
   const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
 
@@ -39,6 +42,11 @@ const App: React.FC = () => {
     const handleResize = () => setWindowSize({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 初始化广告管理器
+  useEffect(() => {
+    adManager.initialize().catch(console.error);
   }, []);
 
   const refreshLocks = useCallback((currentTiles: TileData[], movingId?: string | null) => {
@@ -302,6 +310,61 @@ const App: React.FC = () => {
     setHistory([]); 
   };
 
+  // 清空卡槽（观看广告后使用）
+  const clearSlot = useCallback(() => {
+    setTiles(prev => {
+      const updated = prev.map(t => {
+        if (t.status === 'slot') {
+          // 将卡槽中的方块移回游戏区域（staging状态）
+          const { TILE_SIZE } = GAME_CONFIG;
+          const slotIndex = slotTiles.findIndex(st => st.id === t.id);
+          return {
+            ...t,
+            status: 'staging' as const,
+            x: (slotIndex - slotTiles.length / 2) * (TILE_SIZE + 20),
+            y: 180,
+            layer: 5000 + slotIndex
+          };
+        }
+        return t;
+      });
+      return refreshLocks(updated, null);
+    });
+    setHistory([]);
+    setGameState('playing');
+  }, [slotTiles, refreshLocks]);
+
+  // 观看广告继续游戏
+  const handleWatchAd = useCallback(async () => {
+    setIsAdLoading(true);
+    setAdError(null);
+
+    try {
+      // 预加载广告
+      const loaded = await adManager.loadRewardedAd();
+      if (!loaded) {
+        setAdError(t.adError || 'Ad failed to load');
+        setIsAdLoading(false);
+        return;
+      }
+
+      // 展示广告
+      const reward = await adManager.showRewardedAd();
+      
+      if (reward) {
+        // 广告观看完成，清空卡槽并继续游戏
+        clearSlot();
+      } else {
+        setAdError(t.adError || 'Ad was not completed');
+      }
+    } catch (error) {
+      console.error('广告展示失败:', error);
+      setAdError(t.adError || 'Ad failed to show');
+    } finally {
+      setIsAdLoading(false);
+    }
+  }, [clearSlot, t]);
+
   const changeLanguage = (lang: Language) => {
     setLanguage(lang);
     localStorage.setItem('game_lang', lang);
@@ -468,8 +531,41 @@ const App: React.FC = () => {
           <div className="bg-white rounded-[40px] p-8 max-w-sm w-full text-center shadow-2xl border-b-[16px] border-red-500">
             <div className="text-7xl mb-6">😵</div>
             <h2 className="text-3xl font-black text-slate-900 mb-2 uppercase">{t.gameOver}</h2>
-            <p className="text-sm text-slate-500 mb-8 font-medium">{t.gameOverDesc}</p>
-            <button onClick={handleRestart} className="w-full py-5 bg-red-500 text-white rounded-[32px] font-black text-2xl shadow-2xl active:translate-y-1 transition-all uppercase tracking-wide">
+            <p className="text-sm text-slate-500 mb-6 font-medium">{t.gameOverDesc}</p>
+            
+            {/* 观看广告继续按钮 */}
+            <button 
+              onClick={handleWatchAd}
+              disabled={isAdLoading}
+              className={`w-full py-4 mb-3 rounded-[28px] font-black text-lg shadow-xl active:translate-y-1 transition-all ${
+                isAdLoading 
+                  ? 'bg-slate-400 text-white cursor-not-allowed' 
+                  : 'bg-gradient-to-r from-blue-500 to-purple-600 text-white hover:from-blue-600 hover:to-purple-700'
+              }`}
+            >
+              {isAdLoading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="animate-spin">⏳</span>
+                  {t.adLoading || 'Loading Ad...'}
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  📺 {t.watchAd || 'Watch Ad to Continue'}
+                </span>
+              )}
+            </button>
+            {adError && (
+              <p className="text-xs text-red-500 mb-3">{adError}</p>
+            )}
+            <p className="text-xs text-slate-400 mb-4">{t.watchAdDesc || 'Watch an ad to clear the slot and continue playing'}</p>
+            
+            <div className="h-px bg-slate-200 my-4"></div>
+            
+            {/* 重新开始按钮 */}
+            <button 
+              onClick={handleRestart} 
+              className="w-full py-4 bg-red-500 text-white rounded-[28px] font-black text-lg shadow-xl active:translate-y-1 transition-all hover:bg-red-600"
+            >
               {t.restart}
             </button>
           </div>
